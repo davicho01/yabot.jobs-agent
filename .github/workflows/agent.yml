@@ -1,55 +1,94 @@
-name: Goal agent
+name: Logo agent
+
+# Designs logos for companies in yabot.jobs-backend's
+# migrations/data/companies_missing_logos_with_domain.csv, uploads them to S3,
+# and opens a PR on the backend with the updated CSV and an Alembic upgrade
+# that points each company at its logo. One batch at a time: a run does
+# nothing while a previous logo PR is still open. See GOAL.md.
 
 on:
   workflow_dispatch:
     inputs:
-      goal:
-        description: "What should the agent accomplish? (blank = use GOAL.md)"
+      batch_size:
+        description: "Companies per run"
         required: false
+        default: "10"
   # Uncomment to run on a schedule (counts against your Claude subscription limits)
   # schedule:
   #   - cron: "0 9 * * 1-5"
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  id-token: write
+  contents: read
+  id-token: write # OIDC for AWS (and the Claude action)
 
 concurrency:
-  group: goal-agent
+  group: logo-agent
   cancel-in-progress: false
+
+env:
+  BACKEND_REPO: davicho01/yabot.jobs-backend
+  LOGO_BUCKET: yabot.jobs-frontend
+  AWS_REGION: us-east-1
 
 jobs:
   agent:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
+      - name: Skip while a logo PR is open
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
+        run: |
+          open=$(gh pr list --repo "$BACKEND_REPO" --state open --json headRefName \
+            --jq '[.[] | select(.headRefName | startswith("agent/logos-"))] | length')
+          echo "open=$open"
+          if [ "$open" != "0" ]; then
+            echo "A logo PR is still open on $BACKEND_REPO; merge or close it first." >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
         with:
+          repository: ${{ env.BACKEND_REPO }}
+          token: ${{ secrets.BACKEND_REPO_TOKEN }}
+          path: backend
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq libcairo2 fonts-dejavu-core
+          pip install -q -r requirements.txt
+          git -C backend config user.name "yabot logo agent"
+          git -C backend config user.email "logo-agent@users.noreply.github.com"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.guard.outputs.skip != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
       - uses: anthropics/claude-code-action@v1
+        if: steps.guard.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           prompt: |
-            You are an autonomous agent working in the repository ${{ github.repository }}.
-
-            Goal: ${{ inputs.goal || 'Read GOAL.md and make concrete progress toward it.' }}
-
-            Follow the conventions in CLAUDE.md.
-
-            Process:
-            1. Explore the repo and decide on one focused, reviewable change that advances the goal.
-            2. Create a new branch: `git checkout -b agent/<short-kebab-description>-${{ github.run_id }}`.
-            3. Make the change. Run tests/linters if they exist and fix failures you introduced.
-            4. Commit with a clear message, then `git push -u origin HEAD`.
-            5. Open a pull request against the default branch with `gh pr create`, including
-               a summary of what changed, why, and how it was verified.
-            If nothing needs to change, make no commits and explain why.
-            Never push directly to the default branch.
+            Follow GOAL.md exactly. Batch size for this run: ${{ inputs.batch_size || '10' }}.
+            The backend repository is checked out at ./backend (GitHub: ${{ env.BACKEND_REPO }}).
+            Run id for the branch name: ${{ github.run_id }}.
           claude_args: |
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(python:*),Bash(pip:*),Bash(pytest:*),Bash(ls:*),Bash(cat:*)"
+            --max-turns 200
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(python tools/logo_pipeline.py:*),Bash(git -C backend:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(mkdir:*),Bash(ls:*)"
