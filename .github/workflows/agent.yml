@@ -1,0 +1,55 @@
+name: Goal agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: "What should the agent accomplish? (blank = use GOAL.md)"
+        required: false
+  # Uncomment to run on a schedule (counts against your Claude subscription limits)
+  # schedule:
+  #   - cron: "0 9 * * 1-5"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: goal-agent
+  cancel-in-progress: false
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            You are an autonomous agent working in the repository ${{ github.repository }}.
+
+            Goal: ${{ inputs.goal || 'Read GOAL.md and make concrete progress toward it.' }}
+
+            Follow the conventions in CLAUDE.md.
+
+            Process:
+            1. Explore the repo and decide on one focused, reviewable change that advances the goal.
+            2. Create a new branch: `git checkout -b agent/<short-kebab-description>-${{ github.run_id }}`.
+            3. Make the change. Run tests/linters if they exist and fix failures you introduced.
+            4. Commit with a clear message, then `git push -u origin HEAD`.
+            5. Open a pull request against the default branch with `gh pr create`, including
+               a summary of what changed, why, and how it was verified.
+            If nothing needs to change, make no commits and explain why.
+            Never push directly to the default branch.
+          claude_args: |
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(python:*),Bash(pip:*),Bash(pytest:*),Bash(ls:*),Bash(cat:*)"
