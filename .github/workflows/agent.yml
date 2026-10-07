@@ -91,4 +91,23 @@ jobs:
             Run id for the branch name: ${{ github.run_id }}.
           claude_args: |
             --max-turns 200
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(python tools/logo_pipeline.py:*),Bash(git -C backend:*),Bash(gh pr create:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(mkdir:*),Bash(ls:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(python tools/logo_pipeline.py:*),Bash(git -C backend:*),Bash(python -m py_compile:*),Bash(mkdir:*),Bash(ls:*)"
+
+      - name: Open the pull request
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
+          BRANCH: agent/logos-${{ github.run_id }}
+        run: |
+          if ! git -C backend ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            echo "No branch pushed (nothing to do, or the agent stopped early)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ ! -s /tmp/pr-body.md ]; then
+            printf '# Add generated logos\n\nThe agent did not write a description; see the diff.\n' > /tmp/pr-body.md
+          fi
+          title=$(head -1 /tmp/pr-body.md | sed 's/^# *//')
+          tail -n +2 /tmp/pr-body.md > /tmp/pr-body-rest.md
+          url=$(gh pr create --repo "$BACKEND_REPO" --base main --head "$BRANCH" \
+            --title "$title" --body-file /tmp/pr-body-rest.md)
+          echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"

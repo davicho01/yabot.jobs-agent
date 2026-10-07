@@ -109,13 +109,15 @@ backend repo is at `./backend`. Run git as `git -C backend ...`.
    ```
    Check it with `python -m py_compile <file>`.
 
-6. **Commit and open the PR.** Only two files may change: the CSV and the
-   new migration. `git -C backend add` them, commit
-   ("Add generated logos for N companies"), `git -C backend push -u origin HEAD`, then
-   `gh pr create --repo davicho01/yabot.jobs-backend --base main --head agent/logos-<run id>`
-   with a body containing:
-   - a table of company name, domain and logo key, each with its public URL
-     `https://yabot.jobs/<logo_key>` so the reviewer can see the logo;
+6. **Commit, push, and write the PR description.** Only two files may
+   change: the CSV and the new migration. `git -C backend add` them, commit
+   ("Add generated logos for N companies"), and
+   `git -C backend push -u origin HEAD`. Do **not** open the PR yourself —
+   the workflow opens it after you finish, using `/tmp/pr-body.md`. Write
+   that file (Markdown) with:
+   - a first line `# Add generated logos for N companies` (used as the title);
+   - a table of company name, domain and logo key, each with an image link
+     `![](https://yabot.jobs/<logo_key>)` so the reviewer can see the logo;
    - any logos you think need a second look;
    - this post-merge note: *Merging deploys and runs the migration. Then run
      `python -m one_off.backfill_logo_aliases` and invalidate `/logos/c/*` on
