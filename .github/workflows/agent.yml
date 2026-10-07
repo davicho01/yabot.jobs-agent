@@ -1,7 +1,7 @@
 name: Logo agent
 
-# Designs logos for companies in yabot.jobs-backend's
-# migrations/data/companies_missing_logos_with_domain.csv, uploads them to S3,
+# Finds the real logo (square icon) for companies in yabot.jobs-backend's
+# migrations/data/companies_missing_logos_with_domain.csv, uploads it to S3,
 # and opens a PR on the backend with the updated CSV and an Alembic upgrade
 # that points each company at its logo. One batch at a time: a run does
 # nothing while a previous logo PR is still open. See GOAL.md.
@@ -82,6 +82,7 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
+          LOGO_DEV_SECRET_KEY: ${{ secrets.LOGO_DEV_SECRET_KEY }} # optional
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -91,7 +92,7 @@ jobs:
             Run id for the branch name: ${{ github.run_id }}.
           claude_args: |
             --max-turns 200
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(python tools/logo_pipeline.py:*),Bash(git -C backend:*),Bash(python -m py_compile:*),Bash(mkdir:*),Bash(ls:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Bash(python tools/logo_pipeline.py:*),Bash(git -C backend:*),Bash(python -m py_compile:*),Bash(mkdir:*),Bash(ls:*)"
 
       - name: Open the pull request
         if: steps.guard.outputs.skip != 'true'
