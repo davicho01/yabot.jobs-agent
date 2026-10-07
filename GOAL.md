@@ -41,20 +41,28 @@ can find it, otherwise the parent's.
 3. **Find each logo.** Try sources in this order, writing each candidate to
    `/tmp/logos/<id>-<n>.png`, until one is right:
    1. `python tools/logo_pipeline.py fetch --domain <domain> --out ...`
-      (the company's homepage icons: manifest, apple-touch-icon, SVG favicon)
-   2. `python tools/logo_pipeline.py fetch --url "https://www.google.com/s2/favicons?domain=<domain>&sz=256" --out ...`
-   3. Web search (WebSearch/WebFetch) for an official square icon: the
-      company's brand/press/media-kit page, its LinkedIn/X/Facebook/GitHub
+      (the homepage's own icons: manifest, apple-touch-icon, SVG favicon — 64px+)
+   2. `python tools/logo_pipeline.py fetch --domain <domain> --render --out ...`
+      — loads the homepage in headless Chromium and takes the **main header
+      logo**, including logos drawn by JavaScript/web components (e.g.
+      nationwide.com's `<bolt-logo>`). A wide logo (icon + wordmark) is
+      handled automatically: the icon on its left is cropped out (output has
+      `"cropped_mark_from": "WxH"`). Prefer this over any small favicon.
+   3. `python tools/logo_pipeline.py fetch --url "https://www.google.com/s2/favicons?domain=<domain>&sz=256" --out ...`
+   4. Web search (WebSearch/WebFetch) for the company's logo or square
+      icon: its brand/press/media-kit page, LinkedIn/X/Facebook/GitHub
       avatar, Wikimedia Commons, Wikipedia infobox. Then
       `python tools/logo_pipeline.py fetch --url <direct image URL> --out ...`
-      (PNG/JPG/WebP/ICO or SVG). For a subsidiary brand, also try its own
-      domain (e.g. columbiagasohio.com).
-   4. **Last resort — the favicon, upscaled.** If nothing 64px+ was found,
+      (PNG/JPG/WebP/ICO or SVG). A full horizontal logo URL is fine — its
+      left icon is cropped out automatically. For a subsidiary brand, also
+      try its own domain (e.g. columbiagasohio.com).
+   5. **Last resort — the favicon, upscaled.** Only if 1–4 found nothing:
       repeat 1 (and 3 with the favicon's own URL) adding `--allow-small`:
-      it accepts icons down to 16px and enlarges them to 128px (crisp edges for flat icons)
-      (the output then includes e.g. `"upscaled_from": "16x16 (crisp)"`). A small real
-      favicon beats no logo — e.g. Columbia Gas's 16px flame
-      (`https://www.columbiagasohio.com/columbiagas.ico`).
+      it accepts icons down to 16px and enlarges them to 128px (crisp edges
+      for flat icons; output includes e.g. `"upscaled_from": "16x16 (crisp)"`).
+
+   Sites that block plain HTTP clients are retried through headless Chromium
+   automatically; if a site still refuses (e.g. honda.com), use web search.
 
    `fetch` prints `{"status": "ok", "png": ..., "source_url": ...}` or why
    it was rejected. Do not use logo.dev (no credits left). **Read every "ok" PNG and look at it** before accepting:
@@ -148,8 +156,8 @@ can find it, otherwise the parent's.
    - a table of company name, domain, logo `![](https://yabot.jobs/<logo_key>)`
      and where it came from (source URL);
    - a list of companies marked not_found, with what you tried;
-   - which logos are upscaled favicons (and from what size), so a reviewer
-     can swap in a better image later;
+   - which logos are upscaled favicons (and from what size), or icons
+     cropped from a wide logo, so a reviewer can check them;
    - any logos you're unsure about;
    - this post-merge note: *Merging deploys and runs the migration. Then run
      `python -m one_off.backfill_logo_aliases` and invalidate `/logos/c/*` on

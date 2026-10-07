@@ -12,6 +12,7 @@ Subcommands:
     (--csv defaults to the backend checkout's CSV)
     next   [--csv PATH] [--limit N]                 rows still to do (JSON)
     fetch  --domain D --out F                     a candidate from the company's own site icons
+    fetch  --domain D --render --out F            ...from the header logo of the page rendered in Chromium
     fetch  --url URL --out F                      a candidate from an image URL (SVG ok)
            [--allow-small]                        ...accepting a small favicon, upscaled (last resort)
     store  --csv PATH --id ID --png F --source-url URL [--dry-run]
@@ -124,9 +125,15 @@ def rasterize_svg(data: bytes) -> bytes:
     height = float(re.sub(r"[^\d.]", "", root.get("height", "")) or 0)
     if not (width and height) and root.get("viewBox"):
         _, _, width, height = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
-    if width >= height:
-        return cairosvg.svg2png(bytestring=data, output_width=SVG_RENDER_SIZE)
-    return cairosvg.svg2png(bytestring=data, output_height=SVG_RENDER_SIZE)
+    # The shorter side at SVG_RENDER_SIZE, so an icon cropped out of a wide
+    # logo still has plenty of pixels (longer side capped).
+    if width and height and width >= height:
+        return cairosvg.svg2png(bytestring=data, output_height=SVG_RENDER_SIZE) if width / height <= 8 else (
+            cairosvg.svg2png(bytestring=data, output_width=SVG_RENDER_SIZE * 8))
+    if width and height:
+        return cairosvg.svg2png(bytestring=data, output_width=SVG_RENDER_SIZE) if height / width <= 8 else (
+            cairosvg.svg2png(bytestring=data, output_height=SVG_RENDER_SIZE * 8))
+    return cairosvg.svg2png(bytestring=data, output_width=SVG_RENDER_SIZE)
 
 
 def is_svg(content: bytes, content_type: str, url: str) -> bool:
@@ -226,24 +233,130 @@ def upscale(data: bytes) -> tuple[bytes, str | None]:
     return out.getvalue(), original
 
 
-def square(li, data: bytes, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str | None]:
-    """Normalized 128px PNG, and the original size if it had to be upscaled."""
+def _foreground(image):
+    """Mask of the logo's own pixels: opaque ones, or for an image with no
+    transparency, the ones that differ from its background (corner) color."""
+    from PIL import Image, ImageChops
+
+    alpha = image.getchannel("A").point(lambda v: 255 if v > 32 else 0)
+    if alpha.getextrema()[0] == 255:  # fully opaque: key out the background color
+        rgb = image.convert("RGB")
+        background = rgb.getpixel((0, 0))
+        diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, background)).convert("L")
+        return diff.point(lambda v: 255 if v > 40 else 0)
+    return alpha
+
+
+def crop_mark(image, max_aspect: float):
+    """A wide logo's icon: the leftmost part, separated from the rest (the
+    wordmark) by a clear vertical gap, if it's about square and at least half
+    the logo's height — e.g. Nationwide's eagle "N" from its horizontal logo.
+    None if the logo has no such part."""
+    mask = _foreground(image)
+    bbox = mask.getbbox()
+    if bbox is None:
+        return None
+    image, mask = image.crop(bbox), mask.crop(bbox)
+    width, height = image.size
+    filled = [mask.crop((x, 0, x + 1, height)).getbbox() is not None for x in range(width)]
+    min_gap = max(2, height // 20)
+    right, gap = None, 0
+    for x, on in enumerate(filled):
+        if on:
+            gap = 0
+            continue
+        gap += 1
+        if gap >= min_gap:
+            right = x - gap + 1
+            break
+    if right is None or right >= width - min_gap:
+        return None  # one solid block: nothing to split off
+    part_mask = mask.crop((0, 0, right, height))
+    pb = part_mask.getbbox()
+    part = image.crop((0, 0, right, height)).crop(pb)
+    pw, ph = part.size
+    if max(pw, ph) / min(pw, ph) > max_aspect or ph < height * 0.5:
+        return None
+    if image.getchannel("A").getextrema()[0] == 255:  # opaque source: make the background transparent
+        part.putalpha(part_mask.crop(pb))
+    return part
+
+
+def square(li, data: bytes, max_aspect: float, allow_small: bool = False) -> tuple[bytes, dict]:
+    """Normalized 128px PNG, plus notes on what was done to get it: the icon
+    cropped out of a wide logo, and/or a small favicon upscaled."""
+    import io
+
+    from PIL import Image
+
+    notes: dict = {}
+    try:
+        image = Image.open(io.BytesIO(data))
+        if image.format == "ICO":
+            image.size = sorted(image.info.get("sizes") or [image.size], key=lambda wh: wh[0] * wh[1])[-1]
+        image = image.convert("RGBA")
+    except Exception as exc:
+        raise li.LogoRejected(f"not a readable image ({exc})") from exc
+    if max(image.size) / max(1, min(image.size)) > max_aspect:
+        mark = crop_mark(image, max_aspect)
+        if mark is not None:
+            notes["cropped_mark_from"] = f"{image.width}x{image.height}"
+            out = io.BytesIO()
+            mark.save(out, format="PNG")
+            data = out.getvalue()
     if not allow_small:
-        return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=MIN_SIDE), None
+        return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=MIN_SIDE), notes
     try:
         data, original = upscale(data)
     except Exception as exc:
         raise li.LogoRejected(f"not a readable image ({exc})") from exc
-    return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=SMALL_MIN_SIDE), original
+    if original:
+        notes["upscaled_from"] = original
+    return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=SMALL_MIN_SIDE), notes
+
+
+class _Response:
+    def __init__(self, status_code: int, content: bytes, headers: dict, url: str):
+        self.status_code, self.content, self.headers, self.url = status_code, content, headers, url
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.content)
+
+
+BLOCKED = (401, 403, 429, 503)
+
+
+def browser_get(url: str) -> _Response:
+    """GET through headless Chromium, for sites/CDNs that refuse plain HTTP
+    clients (e.g. Akamai in front of nationwide.com and honda.com)."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            response = browser.new_context().request.get(url, timeout=20_000)
+            return _Response(response.status, response.body(), dict(response.headers), response.url)
+        finally:
+            browser.close()
 
 
 def http_get(li, url: str):
     import httpx
 
-    return httpx.get(url, headers={"User-Agent": li.USER_AGENT}, timeout=15, follow_redirects=True)
+    try:
+        response = httpx.get(url, headers={"User-Agent": li.USER_AGENT}, timeout=15, follow_redirects=True)
+        if response.status_code not in BLOCKED:
+            return response
+    except httpx.HTTPError:
+        pass
+    return browser_get(url)
 
 
-def load_image(li, url: str, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str, str | None]:
+def load_image(li, url: str, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str, dict]:
     """One image URL (raster or SVG) -> the normalized square PNG."""
     response = http_get(li, url)
     if response.status_code != 200:
@@ -258,8 +371,8 @@ def load_image(li, url: str, max_aspect: float, allow_small: bool = False) -> tu
             raise li.LogoRejected(f"unsafe or unreadable SVG: {exc}") from exc
     if "html" in response.headers.get("content-type", "").lower():
         raise li.LogoRejected(f"{url} is a page, not an image")
-    png, original = square(li, data, max_aspect, allow_small)
-    return png, str(response.url), original
+    png, notes = square(li, data, max_aspect, allow_small)
+    return png, str(response.url), notes
 
 
 def icon_candidates(li, html: str, page_url: str) -> list[str]:
@@ -300,7 +413,7 @@ def icon_candidates(li, html: str, page_url: str) -> list[str]:
     return [u for u in ordered if u.startswith(("http://", "https://")) and not (u in seen or seen.add(u))]
 
 
-def fetch_site(li, domain: str, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str, str | None]:
+def fetch_site(li, domain: str, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str, dict]:
     response = http_get(li, f"https://{domain}")
     if response.status_code != 200 or "html" not in response.headers.get("content-type", "").lower():
         raise li.LogoRejected(f"homepage of {domain} answered HTTP {response.status_code}")
@@ -313,22 +426,91 @@ def fetch_site(li, domain: str, max_aspect: float, allow_small: bool = False) ->
     raise li.LogoRejected("no square icon on the site. Tried: " + " | ".join(reasons[-6:]))
 
 
+RENDER_JS = """() => {
+  const out = [];
+  const hint = (el) => [el.tagName, el.id, el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className,
+    el.getAttribute && (el.getAttribute('alt') || ''), el.getAttribute && (el.getAttribute('aria-label') || ''),
+    el.getAttribute && (el.getAttribute('src') || '')].join(' ').toLowerCase();
+  const logoish = (el) => { for (let e = el, i = 0; e && i < 4; e = e.parentElement || (e.getRootNode && e.getRootNode().host), i++) {
+      if (/logo/.test(hint(e))) return true; } return false; };
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) walk(el.shadowRoot);
+      const r = el.getBoundingClientRect();
+      if (!r.width || r.top > 400) continue;
+      if (el.tagName === 'IMG' && logoish(el)) out.push({kind: 'url', value: el.currentSrc || el.src, top: r.top});
+      else if (el.tagName.toLowerCase() === 'svg' && logoish(el) && r.width > 20)
+        out.push({kind: 'svg', value: el.outerHTML, top: r.top});
+    }
+  };
+  walk(document);
+  return out.sort((a, b) => a.top - b.top);
+}"""
+
+
+def render_candidates(domain: str, width: int) -> tuple[list[str], list[str]]:
+    """Load the homepage in headless Chromium (desktop or mobile width) and
+    return (image URLs, inline SVGs) that look like the header logo,
+    including ones drawn by web components and any logo images it loaded."""
+    from playwright.sync_api import sync_playwright
+
+    loaded: list[str] = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_context(viewport={"width": width, "height": 900}).new_page()
+            page.on("response", lambda r: loaded.append(r.url) if (
+                "image" in (r.headers.get("content-type") or "") and re.search(r"logo", r.url, re.I)) else None)
+            try:
+                page.goto(f"https://{domain}", wait_until="load", timeout=45_000)
+            except Exception:
+                pass  # slow third-party assets: whatever has rendered is enough
+            page.wait_for_timeout(3_000)  # web components draw their logo after load
+            found = page.evaluate(RENDER_JS)
+        finally:
+            browser.close()
+    urls = [f["value"] for f in found if f["kind"] == "url"] + loaded
+    svgs = [f["value"] for f in found if f["kind"] == "svg"]
+    return list(dict.fromkeys(urls)), list(dict.fromkeys(svgs))
+
+
+def fetch_render(li, domain: str, max_aspect: float, allow_small: bool) -> tuple[bytes, str, dict]:
+    reasons = []
+    for width in (1280, 390):  # mobile headers often show just the icon
+        urls, svgs = render_candidates(domain, width)
+        for url in urls[:10]:
+            try:
+                return load_image(li, url, max_aspect, allow_small)
+            except Exception as exc:
+                reasons.append(f"{url}: {exc}")
+        for svg in svgs[:5]:
+            try:
+                data = svg.encode()
+                if b"xmlns=" not in data[:300]:
+                    data = data.replace(b"<svg", b'<svg xmlns="http://www.w3.org/2000/svg"', 1)
+                png, notes = square(li, rasterize_svg(data), max_aspect, allow_small)
+                return png, f"rendered inline SVG on https://{domain}", notes
+            except Exception as exc:
+                reasons.append(f"inline svg: {exc}")
+    raise li.LogoRejected("no usable logo in the rendered page. Tried: " + " | ".join(reasons[-6:]))
+
+
 def cmd_fetch(args: argparse.Namespace) -> None:
     li = logo_images(args.backend)
     try:
         if args.url:
-            png, source, original = load_image(li, args.url, args.max_aspect, args.allow_small)
+            png, source, notes = load_image(li, args.url, args.max_aspect, args.allow_small)
+        elif args.render:
+            png, source, notes = fetch_render(li, args.domain, args.max_aspect, args.allow_small)
         else:
-            png, source, original = fetch_site(li, args.domain, args.max_aspect, args.allow_small)
+            png, source, notes = fetch_site(li, args.domain, args.max_aspect, args.allow_small)
     except Exception as exc:  # LogoRejected or network trouble: just a failed candidate
         json.dump({"status": "rejected", "reason": f"{exc}"[:1500]}, sys.stdout)
         print()
         return
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_bytes(png)
-    result = {"status": "ok", "png": args.out, "source_url": source}
-    if original:
-        result["upscaled_from"] = original
+    result = {"status": "ok", "png": args.out, "source_url": source, **notes}
     json.dump(result, sys.stdout)
     print()
 
@@ -416,6 +598,7 @@ def main() -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--max-aspect", type=float, default=MAX_ASPECT)
     p.add_argument("--allow-small", action="store_true", help="accept icons down to 16px, upscaled (last resort)")
+    p.add_argument("--render", action="store_true", help="with --domain: load the page in headless Chromium")
     p.add_argument("--backend", default="backend")
     p.set_defaults(func=cmd_fetch)
 
