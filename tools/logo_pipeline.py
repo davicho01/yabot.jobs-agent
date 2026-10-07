@@ -148,9 +148,56 @@ MIN_SIDE = 64  # preferred: big enough to look crisp at 128
 SMALL_MIN_SIDE = 16  # --allow-small: a favicon, upscaled, beats having no logo
 
 
+CRISP_RENDER_SIZE = 512
+CRISP_MAX_COLORS = 3  # flat icons only; detailed ones lose detail when snapped
+
+
+def _dist_to_segment(p, a, b) -> float:
+    ab = [y - x for x, y in zip(a, b)]
+    ap = [y - x for x, y in zip(a, p)]
+    t = max(0.0, min(1.0, sum(x * y for x, y in zip(ap, ab)) / (sum(v * v for v in ab) or 1)))
+    return sum((pi - (ai + t * abi)) ** 2 for pi, ai, abi in zip(p, a, ab)) ** 0.5
+
+
+def flat_colors(image, max_colors: int = 6) -> list[tuple[int, int, int]]:
+    """An icon's real colors: its most frequent opaque colors, without
+    near-duplicates or the anti-aliasing blends between two of them."""
+    counts: dict[tuple[int, int, int], int] = {}
+    for pixel in image.getdata():
+        if pixel[3] > 200:
+            counts[pixel[:3]] = counts.get(pixel[:3], 0) + 1
+    total = sum(counts.values()) or 1
+    kept: list[tuple[int, int, int]] = []
+    for color, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        if n / total < 0.02 or len(kept) >= max_colors:
+            break
+        if any(sum((x - y) ** 2 for x, y in zip(color, c)) < 40**2 for c in kept):
+            continue
+        if any(_dist_to_segment(color, a, b) < 24 for i, a in enumerate(kept) for b in kept[i + 1 :]):
+            continue
+        kept.append(color)
+    return kept
+
+
+def crisp_upscale(image, colors):
+    """Enlarge a small flat icon with sharp edges: smooth it at 512px, snap
+    every pixel back to the icon's own colors (hard edges, no blur), then
+    downsample to 128 so the edges are cleanly anti-aliased."""
+    from PIL import Image, ImageFilter
+
+    size = CRISP_RENDER_SIZE
+    big = image.resize((size, size), Image.BICUBIC).filter(ImageFilter.GaussianBlur(size / max(image.size) * 0.3))
+    palette = Image.new("P", (1, 1))
+    flat = [v for c in colors for v in c]
+    palette.putpalette(flat + flat[:3] * (256 - len(colors)))
+    out = big.convert("RGB").quantize(palette=palette, dither=Image.Dither.NONE).convert("RGBA")
+    out.putalpha(big.getchannel("A").point(lambda v: 255 if v > 127 else 0))
+    return out.resize((128, 128), Image.LANCZOS)
+
+
 def upscale(data: bytes) -> tuple[bytes, str | None]:
-    """A source smaller than MIN_SIDE, smoothly enlarged to fill 128px (the
-    backend's normalizer only ever shrinks). Returns the image and its
+    """A source smaller than MIN_SIDE, enlarged to fill 128px (the backend's
+    normalizer only ever shrinks): crisp for flat icons, smooth otherwise. Returns the image and its
     original size, or the data unchanged if it's big enough already."""
     import io
 
@@ -166,8 +213,14 @@ def upscale(data: bytes) -> tuple[bytes, str | None]:
     if min(image.size) >= MIN_SIDE:
         return data, None
     original = f"{image.width}x{image.height}"
-    scale = 128 / max(image.size)
-    image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
+    colors = flat_colors(image)
+    if 1 <= len(colors) <= CRISP_MAX_COLORS and image.width == image.height:
+        image = crisp_upscale(image, colors)
+        original += " (crisp)"
+    else:
+        scale = 128 / max(image.size)
+        image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
+        original += " (smooth)"
     out = io.BytesIO()
     image.save(out, format="PNG")
     return out.getvalue(), original

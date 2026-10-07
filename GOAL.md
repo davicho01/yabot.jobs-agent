@@ -51,8 +51,8 @@ can find it, otherwise the parent's.
       domain (e.g. columbiagasohio.com).
    4. **Last resort — the favicon, upscaled.** If nothing 64px+ was found,
       repeat 1 (and 3 with the favicon's own URL) adding `--allow-small`:
-      it accepts icons down to 16px and smoothly enlarges them to 128px
-      (the output then includes `"upscaled_from": "16x16"`). A small real
+      it accepts icons down to 16px and enlarges them to 128px (crisp edges for flat icons)
+      (the output then includes e.g. `"upscaled_from": "16x16 (crisp)"`). A small real
       favicon beats no logo — e.g. Columbia Gas's 16px flame
       (`https://www.columbiagasohio.com/columbiagas.ico`).
 
