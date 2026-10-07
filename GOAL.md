@@ -22,7 +22,8 @@ Logos are shown as a 128×128 square next to a company name, often at
 icon, apple-touch-icon, social-media avatar, or the symbol part of its logo
 (e.g. Marvell's square "M" mark, Insperity's star mark) — **not** a wide
 wordmark, which shrinks to an unreadable strip. The pipeline rejects
-anything wider than 1.5:1 or smaller than 64px for that reason.
+anything wider than 1.5:1, and prefers sources of at least 64px; a smaller
+favicon is only used, upscaled, when nothing bigger exists.
 
 It must be the right *brand*: base it on the company behind `company_domain`
 and the name (ignore leading numeric codes and legal suffixes — "21 Marvell
@@ -48,6 +49,12 @@ can find it, otherwise the parent's.
       `python tools/logo_pipeline.py fetch --url <direct image URL> --out ...`
       (PNG/JPG/WebP/ICO or SVG). For a subsidiary brand, also try its own
       domain (e.g. columbiagasohio.com).
+   4. **Last resort — the favicon, upscaled.** If nothing 64px+ was found,
+      repeat 1 (and 3 with the favicon's own URL) adding `--allow-small`:
+      it accepts icons down to 16px and smoothly enlarges them to 128px
+      (the output then includes `"upscaled_from": "16x16"`). A small real
+      favicon beats no logo — e.g. Columbia Gas's 16px flame
+      (`https://www.columbiagasohio.com/columbiagas.ico`).
 
    `fetch` prints `{"status": "ok", "png": ..., "source_url": ...}` or why
    it was rejected. Do not use logo.dev (no credits left). **Read every "ok" PNG and look at it** before accepting:
@@ -59,7 +66,8 @@ can find it, otherwise the parent's.
    - Found: `python tools/logo_pipeline.py store --id <id> --png <file> --source-url <source_url>`
      (uploads `logos/<slug>-<sha256[:8]>.png` to S3 and fills `logo_key`,
      `logo_source_url`, `logo_status=found`).
-   - Nothing acceptable after all sources:
+   - Nothing acceptable after all sources, including the upscaled favicon
+     (e.g. the site has no favicon at all, or it's a generic default):
      `python tools/logo_pipeline.py skip --id <id> --reason "<what you tried>"`
      (`logo_status=not_found`, so it isn't retried). Never fall back to
      generating a logo.
@@ -140,6 +148,8 @@ can find it, otherwise the parent's.
    - a table of company name, domain, logo `![](https://yabot.jobs/<logo_key>)`
      and where it came from (source URL);
    - a list of companies marked not_found, with what you tried;
+   - which logos are upscaled favicons (and from what size), so a reviewer
+     can swap in a better image later;
    - any logos you're unsure about;
    - this post-merge note: *Merging deploys and runs the migration. Then run
      `python -m one_off.backfill_logo_aliases` and invalidate `/logos/c/*` on

@@ -13,6 +13,7 @@ Subcommands:
     next   [--csv PATH] [--limit N]                 rows still to do (JSON)
     fetch  --domain D --out F                     a candidate from the company's own site icons
     fetch  --url URL --out F                      a candidate from an image URL (SVG ok)
+           [--allow-small]                        ...accepting a small favicon, upscaled (last resort)
     store  --csv PATH --id ID --png F --source-url URL [--dry-run]
                                                   upload it, write logo_key etc. to the CSV
     skip   --csv PATH --id ID --reason TEXT       no real logo found: mark it so it isn't retried
@@ -143,11 +144,44 @@ def is_svg(content: bytes, content_type: str, url: str) -> bool:
 # (default 1.5:1), and a site is searched icon-first.
 
 MAX_ASPECT = 1.5
-MIN_SIDE = 64  # smaller sources look blurry upscaled to 128
+MIN_SIDE = 64  # preferred: big enough to look crisp at 128
+SMALL_MIN_SIDE = 16  # --allow-small: a favicon, upscaled, beats having no logo
 
 
-def square(li, data: bytes, max_aspect: float) -> bytes:
-    return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=MIN_SIDE)
+def upscale(data: bytes) -> tuple[bytes, str | None]:
+    """A source smaller than MIN_SIDE, smoothly enlarged to fill 128px (the
+    backend's normalizer only ever shrinks). Returns the image and its
+    original size, or the data unchanged if it's big enough already."""
+    import io
+
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(data))
+    if image.format == "ICO":  # its largest frame, as the backend does
+        image.size = sorted(image.info.get("sizes") or [image.size], key=lambda wh: wh[0] * wh[1])[-1]
+    image = image.convert("RGBA")
+    bbox = image.getchannel("A").getbbox()
+    if bbox:
+        image = image.crop(bbox)
+    if min(image.size) >= MIN_SIDE:
+        return data, None
+    original = f"{image.width}x{image.height}"
+    scale = 128 / max(image.size)
+    image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
+    out = io.BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue(), original
+
+
+def square(li, data: bytes, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str | None]:
+    """Normalized 128px PNG, and the original size if it had to be upscaled."""
+    if not allow_small:
+        return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=MIN_SIDE), None
+    try:
+        data, original = upscale(data)
+    except Exception as exc:
+        raise li.LogoRejected(f"not a readable image ({exc})") from exc
+    return li.normalize_or_raise(data, max_aspect=max_aspect, min_side=SMALL_MIN_SIDE), original
 
 
 def http_get(li, url: str):
@@ -156,7 +190,7 @@ def http_get(li, url: str):
     return httpx.get(url, headers={"User-Agent": li.USER_AGENT}, timeout=15, follow_redirects=True)
 
 
-def load_image(li, url: str, max_aspect: float) -> tuple[bytes, str]:
+def load_image(li, url: str, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str, str | None]:
     """One image URL (raster or SVG) -> the normalized square PNG."""
     response = http_get(li, url)
     if response.status_code != 200:
@@ -171,7 +205,8 @@ def load_image(li, url: str, max_aspect: float) -> tuple[bytes, str]:
             raise li.LogoRejected(f"unsafe or unreadable SVG: {exc}") from exc
     if "html" in response.headers.get("content-type", "").lower():
         raise li.LogoRejected(f"{url} is a page, not an image")
-    return square(li, data, max_aspect), str(response.url)
+    png, original = square(li, data, max_aspect, allow_small)
+    return png, str(response.url), original
 
 
 def icon_candidates(li, html: str, page_url: str) -> list[str]:
@@ -212,14 +247,14 @@ def icon_candidates(li, html: str, page_url: str) -> list[str]:
     return [u for u in ordered if u.startswith(("http://", "https://")) and not (u in seen or seen.add(u))]
 
 
-def fetch_site(li, domain: str, max_aspect: float) -> tuple[bytes, str]:
+def fetch_site(li, domain: str, max_aspect: float, allow_small: bool = False) -> tuple[bytes, str, str | None]:
     response = http_get(li, f"https://{domain}")
     if response.status_code != 200 or "html" not in response.headers.get("content-type", "").lower():
         raise li.LogoRejected(f"homepage of {domain} answered HTTP {response.status_code}")
     reasons = []
     for url in icon_candidates(li, response.text[: li.MAX_HTML_BYTES], str(response.url))[:12]:
         try:
-            return load_image(li, url, max_aspect)
+            return load_image(li, url, max_aspect, allow_small)
         except Exception as exc:
             reasons.append(f"{url}: {exc}")
     raise li.LogoRejected("no square icon on the site. Tried: " + " | ".join(reasons[-6:]))
@@ -229,16 +264,19 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     li = logo_images(args.backend)
     try:
         if args.url:
-            png, source = load_image(li, args.url, args.max_aspect)
+            png, source, original = load_image(li, args.url, args.max_aspect, args.allow_small)
         else:
-            png, source = fetch_site(li, args.domain, args.max_aspect)
+            png, source, original = fetch_site(li, args.domain, args.max_aspect, args.allow_small)
     except Exception as exc:  # LogoRejected or network trouble: just a failed candidate
         json.dump({"status": "rejected", "reason": f"{exc}"[:1500]}, sys.stdout)
         print()
         return
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_bytes(png)
-    json.dump({"status": "ok", "png": args.out, "source_url": source}, sys.stdout)
+    result = {"status": "ok", "png": args.out, "source_url": source}
+    if original:
+        result["upscaled_from"] = original
+    json.dump(result, sys.stdout)
     print()
 
 
@@ -324,6 +362,7 @@ def main() -> None:
     source.add_argument("--domain")
     p.add_argument("--out", required=True)
     p.add_argument("--max-aspect", type=float, default=MAX_ASPECT)
+    p.add_argument("--allow-small", action="store_true", help="accept icons down to 16px, upscaled (last resort)")
     p.add_argument("--backend", default="backend")
     p.set_defaults(func=cmd_fetch)
 
