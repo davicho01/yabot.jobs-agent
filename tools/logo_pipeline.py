@@ -10,7 +10,7 @@ and records the result. Keys follow the backend's own convention
 
 Subcommands:
     next   --csv PATH [--limit N]                 rows still to do (JSON)
-    fetch  --domain D --via logo_dev|site --out F  a candidate from logo.dev / the company's site
+    fetch  --domain D --out F                     a candidate from the company's own site icons
     fetch  --url URL --out F                      a candidate from an image URL (SVG ok)
     store  --csv PATH --id ID --png F --source-url URL [--dry-run]
                                                   upload it, write logo_key etc. to the CSV
@@ -20,7 +20,8 @@ Subcommands:
 
 fetch never uploads anything; it writes the normalized PNG to --out so it can
 be looked at. Uploads go to $LOGO_BUCKET (default yabot.jobs-frontend) with
-the ambient AWS credentials. logo.dev needs $LOGO_DEV_SECRET_KEY.
+the ambient AWS credentials. logo.dev is deliberately not used (out of
+credits).
 """
 
 from __future__ import annotations
@@ -36,7 +37,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 LOGO_CACHE_CONTROL = "public, max-age=31536000, immutable"  # company_logos.LOGO_CACHE_CONTROL
-LOGO_DEV_API = "https://api.logo.dev/v2/brands/logo"
 SVG_NS = "{http://www.w3.org/2000/svg}"
 SVG_RENDER_SIZE = 512  # rasterize SVGs this big, then normalize down like any image
 COLUMNS = ("logo_key", "logo_source_url", "logo_status")
@@ -136,7 +136,7 @@ def is_svg(content: bytes, content_type: str, url: str) -> bool:
 # --- fetch -----------------------------------------------------------------
 #
 # A 128px square only suits a square mark: a brand's icon/symbol (app icon,
-# apple-touch-icon, logo.dev's icon), not its wide wordmark, which shrinks to
+# apple-touch-icon), not its wide wordmark, which shrinks to
 # an unreadable strip. So every candidate must be at most --max-aspect wide
 # (default 1.5:1), and a site is searched icon-first.
 
@@ -223,30 +223,11 @@ def fetch_site(li, domain: str, max_aspect: float) -> tuple[bytes, str]:
     raise li.LogoRejected("no square icon on the site. Tried: " + " | ".join(reasons[-6:]))
 
 
-def fetch_logo_dev(li, domain: str, max_aspect: float) -> tuple[bytes, str]:
-    key = os.environ.get("LOGO_DEV_SECRET_KEY")
-    if not key:
-        raise li.LogoRejected("LOGO_DEV_SECRET_KEY isn't set")
-    import httpx
-
-    headers = {"Authorization": f"Bearer {key}", "User-Agent": li.USER_AGENT}
-    response = httpx.get(LOGO_DEV_API, params={"domain": domain}, headers=headers, timeout=15, follow_redirects=True)
-    if response.status_code != 200:
-        raise li.LogoRejected(f"logo.dev answered HTTP {response.status_code} for {domain}")
-    url = response.json()["data"]["url"]
-    # Pre-signed download URL: fetched without our key (as logo_dev.download).
-    separator = "&" if "?" in url else "?"
-    png, _ = load_image(li, f"{url}{separator}format=png&size=256", max_aspect)
-    return png, f"logo.dev:{domain}"
-
-
 def cmd_fetch(args: argparse.Namespace) -> None:
     li = logo_images(args.backend)
     try:
         if args.url:
             png, source = load_image(li, args.url, args.max_aspect)
-        elif args.via == "logo_dev":
-            png, source = fetch_logo_dev(li, args.domain, args.max_aspect)
         else:
             png, source = fetch_site(li, args.domain, args.max_aspect)
     except Exception as exc:  # LogoRejected or network trouble: just a failed candidate
@@ -339,7 +320,6 @@ def main() -> None:
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--url")
     source.add_argument("--domain")
-    p.add_argument("--via", choices=("logo_dev", "site"), default="site")
     p.add_argument("--out", required=True)
     p.add_argument("--max-aspect", type=float, default=MAX_ASPECT)
     p.add_argument("--backend", default="backend")

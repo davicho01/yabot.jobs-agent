@@ -36,12 +36,10 @@ can find it, otherwise the parent's.
 
 3. **Find each logo.** Try sources in this order, writing each candidate to
    `/tmp/logos/<id>-<n>.png`, until one is right:
-   1. `python tools/logo_pipeline.py fetch --domain <domain> --via logo_dev --out ...`
-      (logo.dev, the backend's usual source; skipped if no key is configured)
-   2. `python tools/logo_pipeline.py fetch --domain <domain> --via site --out ...`
+   1. `python tools/logo_pipeline.py fetch --domain <domain> --out ...`
       (the company's homepage icons: manifest, apple-touch-icon, SVG favicon)
-   3. `python tools/logo_pipeline.py fetch --url "https://www.google.com/s2/favicons?domain=<domain>&sz=256" --out ...`
-   4. Web search (WebSearch/WebFetch) for an official square icon: the
+   2. `python tools/logo_pipeline.py fetch --url "https://www.google.com/s2/favicons?domain=<domain>&sz=256" --out ...`
+   3. Web search (WebSearch/WebFetch) for an official square icon: the
       company's brand/press/media-kit page, its LinkedIn/X/Facebook/GitHub
       avatar, Wikimedia Commons, Wikipedia infobox. Then
       `python tools/logo_pipeline.py fetch --url <direct image URL> --out ...`
@@ -49,7 +47,7 @@ can find it, otherwise the parent's.
       domain (e.g. columbiagasohio.com).
 
    `fetch` prints `{"status": "ok", "png": ..., "source_url": ...}` or why
-   it was rejected. **Read every "ok" PNG and look at it** before accepting:
+   it was rejected. Do not use logo.dev (no credits left). **Read every "ok" PNG and look at it** before accepting:
    it must be recognizably this company's logo mark, crisp, not a generic
    placeholder/globe, not a hosting provider's or CMS's default icon, not a
    photo, and not cut off.
