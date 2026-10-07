@@ -9,8 +9,11 @@ it, record it in the CSV, and add an Alembic upgrade that sets it on the
 company record. Then the workflow opens one pull request for review.
 
 All paths are relative to the workflow's working directory; the backend repo
-is at `./backend`. Run git as `git -C backend ...`. `$CSV` below means
+is at `./backend`. Run git as `git -C backend ...`. The pipeline's `--csv` defaults to
 `backend/migrations/data/companies_missing_logos_with_domain.csv`.
+
+Run each command on its own, exactly in the form shown: no `cd`, shell
+variables, `&&`, pipes or redirects — anything else is blocked.
 
 ## What a good logo is here
 
@@ -29,7 +32,7 @@ can find it, otherwise the parent's.
 
 ## Steps
 
-1. **Pick the batch.** `python tools/logo_pipeline.py next --csv $CSV --limit <batch size>`
+1. **Pick the batch.** `python tools/logo_pipeline.py next --limit <batch size>`
    If it returns `[]`, stop without changes.
 
 2. **Branch.** `git -C backend checkout -b agent/logos-<run id>`
@@ -53,11 +56,11 @@ can find it, otherwise the parent's.
    photo, and not cut off.
 
 4. **Record it.**
-   - Found: `python tools/logo_pipeline.py store --csv $CSV --id <id> --png <file> --source-url <source_url>`
+   - Found: `python tools/logo_pipeline.py store --id <id> --png <file> --source-url <source_url>`
      (uploads `logos/<slug>-<sha256[:8]>.png` to S3 and fills `logo_key`,
      `logo_source_url`, `logo_status=found`).
    - Nothing acceptable after all sources:
-     `python tools/logo_pipeline.py skip --csv $CSV --id <id> --reason "<what you tried>"`
+     `python tools/logo_pipeline.py skip --id <id> --reason "<what you tried>"`
      (`logo_status=not_found`, so it isn't retried). Never fall back to
      generating a logo.
 

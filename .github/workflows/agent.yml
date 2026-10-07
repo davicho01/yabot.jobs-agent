@@ -79,6 +79,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: anthropics/claude-code-action@v1
+        id: claude
         if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.BACKEND_REPO_TOKEN }}
@@ -92,6 +93,18 @@ jobs:
           claude_args: |
             --max-turns 200
             --allowedTools "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Bash(python tools/logo_pipeline.py:*),Bash(git -C backend:*),Bash(python -m py_compile:*),Bash(mkdir:*),Bash(ls:*)"
+
+      - name: Report blocked commands
+        if: always() && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          denials=$(jq -r '[.[] | select(.type == "result")] | last | .permission_denials // [] | .[]
+            | "- `\(.tool_name)`: `\(.tool_input.command // .tool_input.file_path // .tool_input.url // .tool_input | tostring | .[0:300])`"' "$EXECUTION_FILE" || true)
+          if [ -n "$denials" ]; then
+            { echo "### Commands the agent was not allowed to run"; echo "$denials"; } >> "$GITHUB_STEP_SUMMARY"
+            echo "$denials"
+          fi
 
       - name: Open the pull request
         if: steps.guard.outputs.skip != 'true'

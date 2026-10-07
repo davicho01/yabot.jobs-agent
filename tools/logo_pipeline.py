@@ -9,7 +9,8 @@ and records the result. Keys follow the backend's own convention
     logos/<slug>-<first 8 hex of sha256(png)>.png   (128x128, transparent padding)
 
 Subcommands:
-    next   --csv PATH [--limit N]                 rows still to do (JSON)
+    (--csv defaults to the backend checkout's CSV)
+    next   [--csv PATH] [--limit N]                 rows still to do (JSON)
     fetch  --domain D --out F                     a candidate from the company's own site icons
     fetch  --url URL --out F                      a candidate from an image URL (SVG ok)
     store  --csv PATH --id ID --png F --source-url URL [--dry-run]
@@ -40,6 +41,7 @@ LOGO_CACHE_CONTROL = "public, max-age=31536000, immutable"  # company_logos.LOGO
 SVG_NS = "{http://www.w3.org/2000/svg}"
 SVG_RENDER_SIZE = 512  # rasterize SVGs this big, then normalize down like any image
 COLUMNS = ("logo_key", "logo_source_url", "logo_status")
+DEFAULT_CSV = "backend/migrations/data/companies_missing_logos_with_domain.csv"
 STATUS_FOUND = "found"
 STATUS_NOT_FOUND = "not_found"
 
@@ -312,7 +314,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("next")
-    p.add_argument("--csv", required=True)
+    p.add_argument("--csv", default=DEFAULT_CSV)
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(func=cmd_next)
 
@@ -326,7 +328,7 @@ def main() -> None:
     p.set_defaults(func=cmd_fetch)
 
     p = sub.add_parser("store")
-    p.add_argument("--csv", required=True)
+    p.add_argument("--csv", default=DEFAULT_CSV)
     p.add_argument("--id", required=True)
     p.add_argument("--png", required=True)
     p.add_argument("--source-url", required=True)
@@ -334,7 +336,7 @@ def main() -> None:
     p.set_defaults(func=cmd_store)
 
     p = sub.add_parser("skip")
-    p.add_argument("--csv", required=True)
+    p.add_argument("--csv", default=DEFAULT_CSV)
     p.add_argument("--id", required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_skip)
